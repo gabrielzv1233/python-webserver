@@ -4,28 +4,36 @@ import urllib.parse
 import subprocess
 import posixpath
 import mimetypes
+import argparse
 import socket
 import time
 import sys
 import re
 import os
 
-ENV_TEMPLATE = r"""
-HOST=0.0.0.0
-PORT=80
+parser = argparse.ArgumentParser()
+
+parser.add_argument("--port", type=int, default=None)
+parser.add_argument("--git-repo", default=None)
+parser.add_argument("--git-branch", default=None)
+parser.add_argument("--blacklist", default=None)
+
+args = parser.parse_args()
+
+ENV_TEMPLATE = f"""HOST=0.0.0.0
+PORT={args.port if args.port is not None else 80}
 
 # Site root (served)
 HTML_ROOT=./html
 
 # Optional git auto-update (leave blank to disable)
 # If set, repo is cloned/pulled into GIT_DEST (default: HTML_ROOT)
-GIT_REPO=
-GIT_BRANCH=main
+GIT_REPO={args.git_repo if args.git_repo is not None else ''}
+GIT_BRANCH={args.git_branch if args.git_branch is not None else 'main'}
 GIT_DEST=
 
 # Comma-separated blacklist of regex patterns matched against the URL path
-BLACKLIST=^/err(/|$)
-"""
+BLACKLIST={args.blacklist if args.blacklist is not None else r''}"""
 
 class log:
     def __init__(self):
@@ -334,20 +342,18 @@ def main():
     env_path = os.path.join(base_dir, ".env")
     ensure_env(env_path)
     env = parse_env_file(env_path)
-
     host = env.get("HOST", "0.0.0.0").strip() or "0.0.0.0"
-    port_raw = env.get("PORT", "80").strip() or "80"
-    port = int(port_raw)
+    port = int(args.port if args.port is not None else (env.get("PORT", "80").strip() or "80"))
 
     html_root = abspath(base_dir, env.get("HTML_ROOT", "./html"))
 
     os.makedirs(html_root, exist_ok=True)
 
-    blacklist = compile_blacklist(env.get("BLACKLIST", ""))
+    blacklist = compile_blacklist(args.blacklist if args.blacklist is not None else env.get("BLACKLIST", ""))
     
     log("loading git...")
-    git_repo = (env.get("GIT_REPO", "") or "").strip()
-    git_branch = (env.get("GIT_BRANCH", "main") or "main").strip()
+    git_repo = args.git_repo if args.git_repo is not None else ((env.get("GIT_REPO", "") or "").strip())
+    git_branch = args.git_branch if args.git_branch is not None else ((env.get("GIT_BRANCH", "main") or "main").strip())
     git_dest = (env.get("GIT_DEST", "") or "").strip()
     if not git_dest:
         git_dest = html_root
