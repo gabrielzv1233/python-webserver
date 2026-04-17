@@ -222,7 +222,7 @@ class StaticRouter(SimpleHTTPRequestHandler):
             except Exception:
                 message = "-"
 
-        console.print(f'[yellow]{clientaddr}[reset] - [[blue]{dt}[reset]] [{color}]"{method} {path} {protocol} -> {code} {message}"')
+        console.print(f'[yellow]{clientaddr}[reset] - [[blue]{dt}[reset]] [{color}]"{method} [u]{path}[/u] {protocol} -> {code} {message}"')
 
     def log_message(self, fmt, *args):
         pass
