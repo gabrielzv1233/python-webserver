@@ -132,7 +132,7 @@ class StaticRouter(SimpleHTTPRequestHandler):
     server_version = "WebServer/1.0"
 
     def __init__(self, *args, html_root=None, blacklist=None, **kwargs):
-        self.html_root = html_root
+        self.html_root = os.path.abspath(html_root) if html_root else None
         self.blacklist = blacklist or []
         super().__init__(*args, **kwargs)
 
@@ -141,38 +141,48 @@ class StaticRouter(SimpleHTTPRequestHandler):
         self._last_response_message = message or HTTPStatus(int(code)).phrase
         super().send_response(code, message)
 
-    def get_real_ip(self, proxies=[]):
+    def get_real_ip(self, proxies=None):
         peer_ip = self.client_address[0]
 
-        PROXIES = [
+        trusted_proxies = [
             "127.0.0.1",
             "::1",
             "192.168.0.0/16",
         ]
-        PROXIES.append(proxies)
-        
+
+        if proxies:
+            if isinstance(proxies, (list, tuple, set)):
+                trusted_proxies.extend(proxies)
+            else:
+                trusted_proxies.append(proxies)
+
         def is_trusted(ip):
             try:
                 ip_obj = ipaddress.ip_address(ip)
-                for entry in PROXIES:
+                for entry in trusted_proxies:
                     if "/" in entry:
                         if ip_obj in ipaddress.ip_network(entry, strict=False):
                             return True
                     else:
                         if ip == entry:
                             return True
-            except Exception:
+            except Exception as e:
+                print(e)
                 return False
             return False
 
         if not is_trusted(peer_ip):
             return peer_ip
 
-        cf_ip = self.headers.get("CF-Connecting-IP")
+        headers = getattr(self, "headers", None)
+        if not headers:
+            return peer_ip
+
+        cf_ip = headers.get("CF-Connecting-IP")
         if cf_ip:
             return cf_ip.strip()
 
-        xff = self.headers.get("X-Forwarded-For")
+        xff = headers.get("X-Forwarded-For")
         if xff:
             for part in xff.split(","):
                 ip = part.strip()
@@ -182,23 +192,23 @@ class StaticRouter(SimpleHTTPRequestHandler):
                 except Exception:
                     continue
 
-        x_real_ip = self.headers.get("X-Real-IP")
+        x_real_ip = headers.get("X-Real-IP")
         if x_real_ip:
             return x_real_ip.strip()
 
         return peer_ip
 
-    def log_request(self, code='-', size='-'):
+    def log_request(self, code="-", size="-"):
         method = getattr(self, "command", "-")
         path = getattr(self, "path", "-")
         protocol = getattr(self, "request_version", "-")
-        clientaddr = self.get_real_ip(self.client_address[0])
+        clientaddr = self.get_real_ip()
         dt = datetime.now().strftime("%m/%d/%Y@%I:%M:%S %p")
 
         try:
             code = int(code)
         except Exception:
-            code = '-'
+            code = "-"
 
         if isinstance(code, int):
             if code // 100 == 2:
@@ -233,8 +243,29 @@ class StaticRouter(SimpleHTTPRequestHandler):
                 return True
         return False
 
-    def do_GET(self):
-        parsed = urllib.parse.urlsplit(self.path)
+    def get_allowed_methods(self, url_path=None):
+        return ["GET", "HEAD", "OPTIONS"]
+
+    def send_allow(self, methods):
+        self.send_header("Allow", ", ".join(methods))
+
+    def send_method_not_allowed(self, methods=None):
+        if methods is None:
+            methods = self.get_allowed_methods()
+        self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
+        self.send_allow(methods)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def read_request_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except Exception:
+            length = 0
+        return self.rfile.read(length) if length > 0 else b""
+
+    def handle_static(self, head_only=False):
+        parsed = urllib.parse.urlsplit(getattr(self, "path", "/"))
         url_path = parsed.path or "/"
 
         if self.is_blacklisted(url_path):
@@ -250,22 +281,38 @@ class StaticRouter(SimpleHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
-        self.serve_file(target)
+        self.serve_file(target, head_only=head_only)
+
+    def do_GET(self):
+        self.handle_static(head_only=False)
 
     def do_HEAD(self):
-        parsed = urllib.parse.urlsplit(self.path)
-        url_path = parsed.path or "/"
+        self.handle_static(head_only=True)
 
-        if self.is_blacklisted(url_path):
-            self.send_error(HTTPStatus.FORBIDDEN)
-            return
+    def do_OPTIONS(self):
+        methods = self.get_allowed_methods()
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_allow(methods)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
-        target = self.resolve_target(url_path)
-        if target is None or not os.path.isfile(target):
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
+    def do_POST(self):
+        self.send_method_not_allowed()
 
-        self.serve_file(target, head_only=True)
+    def do_PUT(self):
+        self.send_method_not_allowed()
+
+    def do_DELETE(self):
+        self.send_method_not_allowed()
+
+    def do_PATCH(self):
+        self.send_method_not_allowed()
+
+    def do_TRACE(self):
+        self.send_method_not_allowed()
+
+    def do_CONNECT(self):
+        self.send_method_not_allowed()
 
     def resolve_target(self, url_path):
         safe_path = posixpath.normpath(urllib.parse.unquote(url_path))
@@ -278,6 +325,8 @@ class StaticRouter(SimpleHTTPRequestHandler):
         if url_path.endswith("/"):
             rel = safe_path.lstrip("/")
             full = os.path.normpath(os.path.join(self.html_root, rel))
+            if os.path.commonpath([self.html_root, full]) != self.html_root:
+                return None
             if os.path.isdir(full):
                 i1 = os.path.join(full, "index.html")
                 if os.path.isfile(i1):
@@ -290,7 +339,7 @@ class StaticRouter(SimpleHTTPRequestHandler):
         rel = safe_path.lstrip("/")
         full = os.path.normpath(os.path.join(self.html_root, rel))
 
-        if not full.startswith(self.html_root):
+        if os.path.commonpath([self.html_root, full]) != self.html_root:
             return None
 
         rel_ext = os.path.splitext(rel)[1]
@@ -312,11 +361,11 @@ class StaticRouter(SimpleHTTPRequestHandler):
             return full
 
         html_fallback = os.path.normpath(os.path.join(self.html_root, rel + ".html"))
-        if os.path.isfile(html_fallback):
+        if os.path.commonpath([self.html_root, html_fallback]) == self.html_root and os.path.isfile(html_fallback):
             return html_fallback
 
         htm_fallback = os.path.normpath(os.path.join(self.html_root, rel + ".htm"))
-        if os.path.isfile(htm_fallback):
+        if os.path.commonpath([self.html_root, htm_fallback]) == self.html_root and os.path.isfile(htm_fallback):
             return htm_fallback
 
         return None
@@ -349,7 +398,9 @@ class StaticRouter(SimpleHTTPRequestHandler):
 
         if 400 <= int(code) <= 599:
             try:
-                raw_path = urllib.parse.urlsplit(self.path).path or "/"
+                req_path = getattr(self, "path", "/")
+                raw_path = urllib.parse.urlsplit(req_path).path or "/"
+
                 if raw_path.endswith("/"):
                     dir_path = raw_path
                 else:
@@ -358,7 +409,7 @@ class StaticRouter(SimpleHTTPRequestHandler):
                 rel_dir = dir_path.lstrip("/")
                 cur_dir = os.path.normpath(os.path.join(self.html_root, rel_dir))
 
-                if not cur_dir.startswith(self.html_root):
+                if os.path.commonpath([self.html_root, cur_dir]) != self.html_root:
                     cur_dir = self.html_root
 
                 while True:
@@ -375,7 +426,9 @@ class StaticRouter(SimpleHTTPRequestHandler):
                         self.send_header("Content-Type", ctype)
                         self.send_header("Content-Length", str(len(data)))
                         self.end_headers()
-                        self.wfile.write(data)
+
+                        if getattr(self, "command", "") != "HEAD":
+                            self.wfile.write(data)
                         return
 
                     if cur_dir == self.html_root:
@@ -384,7 +437,7 @@ class StaticRouter(SimpleHTTPRequestHandler):
                     parent = os.path.dirname(cur_dir)
                     if not parent or parent == cur_dir:
                         break
-                    if not parent.startswith(self.html_root):
+                    if os.path.commonpath([self.html_root, parent]) != self.html_root:
                         break
                     cur_dir = parent
             except Exception as e:
