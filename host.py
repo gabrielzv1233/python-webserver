@@ -11,9 +11,6 @@ import sys
 import re
 import os
 
-from dotenv import load_dotenv
-load_dotenv(".env")
-
 console = Console(highlight=False)
 
 class log:
