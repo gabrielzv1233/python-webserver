@@ -11,30 +11,6 @@ import sys
 import re
 import os
 
-parser = argparse.ArgumentParser()
-
-parser.add_argument("--port", type=int, default=None)
-parser.add_argument("--git-repo", default=None)
-parser.add_argument("--git-branch", default=None)
-parser.add_argument("--blacklist", default=None)
-
-args = parser.parse_args()
-
-ENV_TEMPLATE = f"""HOST=0.0.0.0
-PORT={args.port if args.port is not None else 80}
-
-# Site root (served)
-HTML_ROOT=./html
-
-# Optional git auto-update (leave blank to disable)
-# If set, repo is cloned/pulled into GIT_DEST (default: HTML_ROOT)
-GIT_REPO={args.git_repo if args.git_repo is not None else ''}
-GIT_BRANCH={args.git_branch if args.git_branch is not None else 'main'}
-GIT_DEST=
-
-# Comma-separated blacklist of regex patterns matched against the URL path
-BLACKLIST={args.blacklist if args.blacklist is not None else r''}"""
-
 class log:
     def __init__(self):
         self._last = time.perf_counter()
@@ -50,29 +26,6 @@ class log:
 log = log()
 
 log("initializing functions...")
-
-def parse_env_file(path):
-    out = {}
-    with open(path, "r", encoding="utf-8") as f:
-        for raw in f.readlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            k = k.strip()
-            v = v.strip()
-            if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
-                v = v[1:-1]
-            out[k] = v
-    return out
-
-def ensure_env(path):
-    if os.path.exists(path):
-        return
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(ENV_TEMPLATE)
 
 def abspath(base_dir, p):
     if not p:
@@ -339,22 +292,21 @@ class StaticRouter(SimpleHTTPRequestHandler):
 def main():
     log("loading env...")
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    env_path = os.path.join(base_dir, ".env")
-    ensure_env(env_path)
-    env = parse_env_file(env_path)
-    host = env.get("HOST", "0.0.0.0").strip() or "0.0.0.0"
-    port = int(args.port if args.port is not None else (env.get("PORT", "80").strip() or "80"))
-
-    html_root = abspath(base_dir, env.get("HTML_ROOT", "./html"))
+    
+    host=os.environ.get("INTERNAL_IP", "127.0.0.1"),
+    port=int(os.environ.get("SERVER_PORT", 80)),
+    
+    html_root = abspath(base_dir, os.environ.get("HTML_ROOT", "./html"))
 
     os.makedirs(html_root, exist_ok=True)
 
-    blacklist = compile_blacklist(args.blacklist if args.blacklist is not None else env.get("BLACKLIST", ""))
+    blacklist = compile_blacklist(os.environ.get("BLACKLIST", ""))
     
     log("loading git...")
-    git_repo = args.git_repo if args.git_repo is not None else ((env.get("GIT_REPO", "") or "").strip())
-    git_branch = args.git_branch if args.git_branch is not None else ((env.get("GIT_BRANCH", "main") or "main").strip())
-    git_dest = (env.get("GIT_DEST", "") or "").strip()
+    git_repo = os.environ.get("GIT_REPO", "").strip()
+    git_branch = os.environ.get("GIT_BRANCH", "main") or "main".strip()
+    git_dest = os.environ.get("GIT_DEST", "") or "".strip()
+    
     if not git_dest:
         git_dest = html_root
     else:
