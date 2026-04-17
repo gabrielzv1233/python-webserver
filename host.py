@@ -13,6 +13,7 @@ import re
 import os
 
 console = Console(highlight=False)
+mimetypes.init()
 
 class log:
     def __init__(self):
@@ -56,6 +57,7 @@ def git_ensure_updated(repo_url, branch, dest_dir):
     if not dest_dir:
         raise RuntimeError("GIT_REPO is set but GIT_DEST resolved to empty path")
 
+    dest_dir = os.path.abspath(dest_dir)
     os.makedirs(dest_dir, exist_ok=True)
 
     git_dir = os.path.join(dest_dir, ".git")
@@ -63,8 +65,10 @@ def git_ensure_updated(repo_url, branch, dest_dir):
         parent = os.path.dirname(dest_dir.rstrip("\\/"))
         name = os.path.basename(dest_dir.rstrip("\\/"))
         os.makedirs(parent, exist_ok=True)
+
         if os.path.exists(dest_dir) and os.listdir(dest_dir):
             raise RuntimeError(f"GIT_DEST exists and is not empty: {dest_dir}")
+
         run_git(["clone", "--depth", "1", "--branch", branch, repo_url, name], cwd=parent)
         return
 
@@ -400,26 +404,26 @@ def main():
     blacklist = compile_blacklist(os.environ.get("BLACKLIST", ""))
     
     git_repo = os.environ.get("GIT_REPO", "").strip()
-    git_branch = os.environ.get("GIT_BRANCH", "main") or "main".strip()
-    git_dest = os.environ.get("GIT_DEST", "") or "".strip()
-    
+    git_branch = os.environ.get("GIT_BRANCH", "main").strip() or "main"
+    git_dest_env = os.environ.get("GIT_DEST", "").strip()
+
+    git_dest = html_root
+    if git_dest_env:
+        if os.path.isabs(git_dest_env):
+            git_dest = git_dest_env
+        else:
+            git_dest = abspath(html_root, git_dest_env)
+
     if git_repo:
         log("loading git")
-        if not git_dest:
-            git_dest = html_root
-        else:
-            git_dest = abspath(base_dir, git_dest)
 
-        mimetypes.init()
-
-        if git_repo:
-            try:
-                git_ensure_updated(git_repo, git_branch, git_dest)
-                log(f"synced {git_repo} ({git_branch}) -> {git_dest}")
-            except Exception as e:
-                log(f"update failed: {e}")
-                raise
-
+        try:
+            git_ensure_updated(git_repo, git_branch, git_dest)
+            log(f"synced {git_repo} ({git_branch}) -> {git_dest}")
+        except Exception as e:
+            log(f"update failed: {e}")
+            raise
+    
     log(f"initializing http.server on [yellow]{host}{'' if port == 80 else f':{port}'}[reset]")
     
     try:
