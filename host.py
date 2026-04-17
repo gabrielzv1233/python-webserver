@@ -1,15 +1,20 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from rich.console import Console
 from http import HTTPStatus
 import urllib.parse
 import subprocess
 import posixpath
 import mimetypes
-import argparse
 import socket
 import time
 import sys
 import re
 import os
+
+from dotenv import load_dotenv
+load_dotenv(".env")
+
+console = Console(highlight=False)
 
 class log:
     def __init__(self):
@@ -19,7 +24,7 @@ class log:
         now = time.perf_counter()
         delta_ms = (now - self._last) * 1000
         self._last = now
-        print(f"[+{delta_ms:.2f}ms] {message}")
+        console.print(f"[blue][+{delta_ms:.2f}ms] [reset]{message}")
 
     def resettimer(self):
         self._last = time.perf_counter()
@@ -97,7 +102,7 @@ def resolve_bind_address(bind_addr):
     if bind_addr not in ("0.0.0.0", "::"):
         return [bind_addr]
 
-    ips = set()
+    ips = []
 
     try:
         for iface in socket.getaddrinfo(socket.gethostname(), None):
@@ -109,12 +114,15 @@ def resolve_bind_address(bind_addr):
             if ip.startswith("127."):
                 continue
 
-            ips.add(ip)
+            ips.append(ip)
 
     except Exception as e:
         print(e)
 
-    return ["127.0.0.1", *sorted(ips)]
+    if bind_addr == "0.0.0.0":
+        ips.append("127.0.0.1")
+        
+    return sorted(ips)
 
 log("initializing StaticRouter...")
 
@@ -291,40 +299,44 @@ class StaticRouter(SimpleHTTPRequestHandler):
 
 def main():
     log("loading env...")
+    host=os.environ.get("INTERNAL_IP", os.environ.get("HOST", "127.0.0.1"))
+    port=int(os.environ.get("SERVER_PORT", 80))
+    
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    host=os.environ.get("INTERNAL_IP", "127.0.0.1"),
-    port=int(os.environ.get("SERVER_PORT", 80)),
-    
     html_root = abspath(base_dir, os.environ.get("HTML_ROOT", "./html"))
-
     os.makedirs(html_root, exist_ok=True)
 
     blacklist = compile_blacklist(os.environ.get("BLACKLIST", ""))
     
-    log("loading git...")
     git_repo = os.environ.get("GIT_REPO", "").strip()
     git_branch = os.environ.get("GIT_BRANCH", "main") or "main".strip()
     git_dest = os.environ.get("GIT_DEST", "") or "".strip()
     
-    if not git_dest:
-        git_dest = html_root
-    else:
-        git_dest = abspath(base_dir, git_dest)
-
-    mimetypes.init()
-
     if git_repo:
-        try:
-            git_ensure_updated(git_repo, git_branch, git_dest)
-            log(f"synced {git_repo} ({git_branch}) -> {git_dest}")
-        except Exception as e:
-            log(f"update failed: {e}")
-            raise
+        log("loading git...")
+        if not git_dest:
+            git_dest = html_root
+        else:
+            git_dest = abspath(base_dir, git_dest)
 
-    log("initializing http.server...")
-    httpd = ThreadingHTTPServer((host, port), make_handler(html_root, blacklist))
+        mimetypes.init()
 
+        if git_repo:
+            try:
+                git_ensure_updated(git_repo, git_branch, git_dest)
+                log(f"synced {git_repo} ({git_branch}) -> {git_dest}")
+            except Exception as e:
+                log(f"update failed: {e}")
+                raise
+
+    log(f"initializing http.server on [yellow]{host}{'' if port == 80 else f':{port}'}[reset]...")
+    
+    try:
+        httpd = ThreadingHTTPServer((host, port), make_handler(html_root, blacklist))
+    except KeyboardInterrupt:
+        log("Stopping server...")
+        return
+        
     print("Serving on addresses:")
     for host in sorted(resolve_bind_address(host), key=len, reverse=True):
         print(f"  http://{host}{'' if port == 80 else f':{port}'}/")
