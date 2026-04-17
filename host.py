@@ -1,13 +1,14 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from rich.console import Console
+from datetime import datetime
 from http import HTTPStatus
 import urllib.parse
 import subprocess
 import posixpath
 import mimetypes
+import ipaddress
 import socket
 import time
-import sys
 import re
 import os
 
@@ -27,7 +28,7 @@ class log:
         self._last = time.perf_counter()
 log = log()
 
-log("initializing functions...")
+log("initializing functions")
 
 def abspath(base_dir, p):
     if not p:
@@ -121,7 +122,7 @@ def resolve_bind_address(bind_addr):
         
     return sorted(ips)
 
-log("initializing StaticRouter...")
+log("initializing StaticRouter")
 
 class StaticRouter(SimpleHTTPRequestHandler):
     server_version = "WebServer/1.0"
@@ -131,8 +132,96 @@ class StaticRouter(SimpleHTTPRequestHandler):
         self.blacklist = blacklist or []
         super().__init__(*args, **kwargs)
 
+    def send_response(self, code, message=None):
+        self._last_response_code = int(code)
+        self._last_response_message = message or HTTPStatus(int(code)).phrase
+        super().send_response(code, message)
+
+    def get_real_ip(self, proxies=[]):
+        peer_ip = self.client_address[0]
+
+        PROXIES = [
+            "127.0.0.1",
+            "::1",
+            "192.168.0.0/16",
+        ]
+        PROXIES.append(proxies)
+        
+        def is_trusted(ip):
+            try:
+                ip_obj = ipaddress.ip_address(ip)
+                for entry in PROXIES:
+                    if "/" in entry:
+                        if ip_obj in ipaddress.ip_network(entry, strict=False):
+                            return True
+                    else:
+                        if ip == entry:
+                            return True
+            except Exception:
+                return False
+            return False
+
+        if not is_trusted(peer_ip):
+            return peer_ip
+
+        cf_ip = self.headers.get("CF-Connecting-IP")
+        if cf_ip:
+            return cf_ip.strip()
+
+        xff = self.headers.get("X-Forwarded-For")
+        if xff:
+            for part in xff.split(","):
+                ip = part.strip()
+                try:
+                    ipaddress.ip_address(ip)
+                    return ip
+                except Exception:
+                    continue
+
+        x_real_ip = self.headers.get("X-Real-IP")
+        if x_real_ip:
+            return x_real_ip.strip()
+
+        return peer_ip
+
+    def log_request(self, code='-', size='-'):
+        method = getattr(self, "command", "-")
+        path = getattr(self, "path", "-")
+        protocol = getattr(self, "request_version", "-")
+        clientaddr = self.get_real_ip(self.client_address[0])
+        dt = datetime.now().strftime("%m/%d/%Y@%I:%M:%S %p")
+
+        try:
+            code = int(code)
+        except Exception:
+            code = '-'
+
+        if isinstance(code, int):
+            if code // 100 == 2:
+                color = "green"
+            elif code // 100 == 3:
+                color = "green"
+            elif code // 100 == 4:
+                color = "yellow"
+            elif code // 100 == 5:
+                color = "red"
+            else:
+                color = "white"
+        else:
+            color = "white"
+
+        try:
+            message = self._last_response_message
+        except Exception:
+            try:
+                message = HTTPStatus(code).phrase if isinstance(code, int) else "-"
+            except Exception:
+                message = "-"
+
+        console.print(f'[yellow]{clientaddr}[reset] - [[blue]{dt}[reset]] [{color}]"{method} {path} {protocol} -> {code} {message}"')
+
     def log_message(self, fmt, *args):
-        sys.stdout.write("%s - - [%s] %s\n" % (self.client_address[0], self.log_date_time_string(), fmt % args))
+        pass
 
     def is_blacklisted(self, url_path):
         for rx in self.blacklist:
@@ -251,6 +340,9 @@ class StaticRouter(SimpleHTTPRequestHandler):
             raise
 
     def send_error(self, code, message=None, explain=None):
+        self._last_response_code = int(code)
+        self._last_response_message = message or HTTPStatus(int(code)).phrase
+
         if 400 <= int(code) <= 599:
             try:
                 raw_path = urllib.parse.urlsplit(self.path).path or "/"
@@ -271,8 +363,10 @@ class StaticRouter(SimpleHTTPRequestHandler):
                         ctype, _ = mimetypes.guess_type(err_file)
                         if not ctype:
                             ctype = "text/html; charset=utf-8"
+
                         with open(err_file, "rb") as f:
                             data = f.read()
+
                         self.send_response(code)
                         self.send_header("Content-Type", ctype)
                         self.send_header("Content-Length", str(len(data)))
@@ -295,7 +389,7 @@ class StaticRouter(SimpleHTTPRequestHandler):
         super().send_error(code, message, explain)
 
 def main():
-    log("loading env...")
+    log("loading env")
     host=os.environ.get("INTERNAL_IP", os.environ.get("HOST", "127.0.0.1"))
     port=int(os.environ.get("SERVER_PORT", 80))
     
@@ -310,7 +404,7 @@ def main():
     git_dest = os.environ.get("GIT_DEST", "") or "".strip()
     
     if git_repo:
-        log("loading git...")
+        log("loading git")
         if not git_dest:
             git_dest = html_root
         else:
@@ -326,24 +420,24 @@ def main():
                 log(f"update failed: {e}")
                 raise
 
-    log(f"initializing http.server on [yellow]{host}{'' if port == 80 else f':{port}'}[reset]...")
+    log(f"initializing http.server on [yellow]{host}{'' if port == 80 else f':{port}'}[reset]")
     
     try:
         httpd = ThreadingHTTPServer((host, port), make_handler(html_root, blacklist))
     except KeyboardInterrupt:
-        log("Stopping server...")
+        log("Stopping server")
         return
         
     print("Serving on addresses:")
     for host in sorted(resolve_bind_address(host), key=len, reverse=True):
-        print(f"  http://{host}{'' if port == 80 else f':{port}'}/")
+        console.print(f"  [#0000EE]http://{host}{'' if port == 80 else f':{port}'}/")
     print()
     
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         log.resettimer()
-        log("Stopping server...")
+        log("Stopping server")
     finally:
         httpd.shutdown()
         httpd.server_close()
